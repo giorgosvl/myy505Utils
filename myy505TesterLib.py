@@ -7,6 +7,7 @@ from random import randint
 import os
 import json
 
+# Register names to register numbers
 regNameMap = {
    'zero' : 0,  'ra'   : 1,  'sp'   : 2,  'gp'   : 3, 'tp'   : 4,
    't0'   : 5,  't1'   : 6,  't2'   : 7,
@@ -75,7 +76,8 @@ def memGetString(coreDumpData, address, size=0):
     return outS
    
 
-
+# Default values for s registers. These are set before running a subroutine and are checked
+#  after the subroutine returns
 default_savedRegs = {
     "s0"  : "0x121",
     "s1"  : "0x122",
@@ -91,10 +93,10 @@ default_savedRegs = {
     "s11" : "0x12c",
 }
 
+# Callee - preserved registers. They are assigned random values to
+#  catch code reliance on the simulator clearing them at the beginning of simulation
 default_randRegs = [ "t0", "t1", "t2", "t3", "t4", "t5", "t6", "ra",
              "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"]
-
-
 
 
 def isLabel(name, labelList):
@@ -141,7 +143,7 @@ def dumpLabelAddresses(allDataLabelNames):
         generatedCode += "\tecall"         + "\n"
     return generatedCode
 
-# Save a0, to stack. Print a1, then read a0 from stack into a1 and print it too. Restore the stack pointer. 
+# Save a0, a1 to stack. Print a1, then read a0 from stack into a1 and print it too. Restore the stack pointer. 
 #   The drawback is that I modify the stack, but there is no automatic way to examine it, in view of
 #   the sort of stack abuse I've seen all these years...
 # Other ideas: 
@@ -154,8 +156,13 @@ def dump_a1_a0():
     generatedCode += "\taddi  sp, sp,    -8\n"
     generatedCode += "\tsw    a1, 4(sp)\n"
     generatedCode += "\tsw    a0, 0(sp)\n"
+    # Add a new line, so that any previous messages are in a separate line
+    generatedCode += "\tli  a1, '\\n'" + "\n"
+    generatedCode += "\tli  a0, 11"    + "\n"  # print char (new line)
+    generatedCode += "\tecall"         + "\n"
     generatedCode += "\t# print a1\n"
-    generatedCode += "\tli    a0, 34   # print the value of a1 in hex\n"
+    generatedCode += "\tlw    a1, 4(sp)  # get original a1 from stack\n"
+    generatedCode += "\tli    a0, 34     # print the value of a1 in hex\n"
     generatedCode += "\tecall\n"
     generatedCode += "\tli  a1, '\\n'" + "\n"
     generatedCode += "\tli  a0, 11"    + "\n"  # print char (new line)
@@ -176,13 +183,13 @@ def exitCall():
 
 def parseLabels(originalSourceCode, newLabels):
     """
-      - Finds all label names and store them in a list (first item of the returned triple) 
+      - Finds all label names and stores them in a list (first item of the returned triple) 
       - For labels (keys) in the newLabels dict, finds the source code line where the label
         starts (2nd item in the returned triple) and the line where it ends (+1), (in the 3rd
         item of the returned triple).
     """
     # Find the lines of code for each label of interest
-    # A "label region" ends if:
+    # A "label region" ends at/when:
     #    end of data segment: .text
     #    another label is defined:  a word followed by a :
     #    an align directive is found: ".align"
@@ -203,35 +210,29 @@ def parseLabels(originalSourceCode, newLabels):
     for i in range(len(originalSourceCode)):
         if dataSegment.search(originalSourceCode[i]):
             inDataSegment = True;  
-            #print("In data " + str(i))
         if inDataSegment:
             m = labelDeclPattern.search(originalSourceCode[i])
             if m:
-                #print("got label " + m.group(1))
                 if inLabelRegion:
                     # The end of a previous label, that I want to modify
                     lineEnd[currentLabel] = i-1; #The end is one line up
                     inLabelRegion = False
-                    #print("endind label " + str(i))
                 if m.group(1) in newLabels.keys():
                     # found a label, which is to be modified
                     currentLabel = m.group(1)
                     lineStart[currentLabel] = i
                     inLabelRegion = True
-                    #print("Starting label " + currentLabel + " at " + str(i))
                 allDataLabelNames.append(m.group(1))
             elif endRegion.search(originalSourceCode[i]):
                 if inLabelRegion:
                     lineEnd[currentLabel] = i-1;  # The end is one line up
                     inLabelRegion = False
-                    #print("endind label " + str(i))
         if textSegment.search(originalSourceCode[i]):
             inDataSegment = False;  
-            #print("out of data " + str(i))
     return (allDataLabelNames, lineStart, lineEnd)
 
 
-def instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode):
+def instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode, lab1Hack=False):
     """
        Converts the assembly code in filename into a version to be simulated.
        A dict of labels is given which may overwrite or add new labels in the data section
@@ -246,10 +247,7 @@ def instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode):
     for i in range(len(originalSourceCode)):
         originalSourceCode[i] = re.sub(r'\bmain\b', "main_old", originalSourceCode[i])
 
-    #print(originalSourceCode)
     (allDataLabelNames, lineStart, lineEnd) = parseLabels(originalSourceCode, newLabels)
-    #print(lineStart)
-    #print(lineEnd)
     modifiedSourceCode = []
     copiedLabel = False
     currentLabel = None
@@ -263,7 +261,6 @@ def instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode):
               break
         if skipLine:
             if not copiedLabel:
-                #print("Copying " + currentLabel + " at " + str(i))
                 modifiedSourceCode.append(currentLabel + ": " + newLabels[currentLabel])
                 copiedLabel = True
                 newLabels.pop(currentLabel, None)
@@ -271,13 +268,11 @@ def instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode):
             # Add any remaining labels in the data segment
             for label in newLabels.keys():
                 modifiedSourceCode.append(label + ": " + newLabels[label])
-            
             # Add the .text line
             modifiedSourceCode.append(originalSourceCode[i])
             modifiedSourceCode.append("main: # this is the modified main")
 
             allDataLabelNames.extend(list(newLabels.keys()))
-            #print(allDataLabelNames)
 
             # Venus starts executing right after .text
             #  so the modified main, must be placed here and it must end with an exit ecall,
@@ -296,9 +291,10 @@ def instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode):
             copiedLabel = False
             skipLine = False
             currentLabel = None
-    #print(modifiedSourceCode)
+    if lab1Hack:
+        modifiedSourceCode.append('jr ra')
     with tempfile.NamedTemporaryFile(mode="w+",delete=False) as fp:
-        print(fp.name)
+        #print(fp.name)
         for line in modifiedSourceCode:
             fp.write(line +"\n")
         fp.flush()
@@ -307,7 +303,7 @@ def instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode):
 
 
 
-def runSim(filename, newLabels, newMainCode, randRegs=default_randRegs, savedRegs=default_savedRegs, simSteps=-1):
+def runSim(filename, newLabels, newMainCode, randRegs=default_randRegs, savedRegs=default_savedRegs, simSteps=-1, lab1Hack=False):
     """
         Converts an assembly code file (see instrumentCode), runs the simulation and reads the simulation results:
         - gets the addresses of all labels (labelMap)
@@ -316,10 +312,10 @@ def runSim(filename, newLabels, newMainCode, randRegs=default_randRegs, savedReg
     """
     # Instrument the code, to include user modifications, initialize registers, dump label addresses and
     #  the final values of a0, a1 into stdout
-    (asmFile, allDataLabelNames) = instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode)
+    (asmFile, allDataLabelNames) = instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode, lab1Hack)
 
     # Run the simulation
-    simCmd = ['java', '-jar', 'venus-jvm-latest.jar', '-it', '-cc', '-cdf', 'dumpFile', '-ms', str(simSteps), asmFile]
+    simCmd = ['java', '-jar', '../myy505Utils/'+'venus-jvm-latest.jar', '-it', '-cc', '-cdf', 'dumpFile', '-ms', str(simSteps), asmFile]
     # -it - detect modifications to code and stop
     # -cc - calling convention checker. NOTE: Function label must be declared in .globl
     # -ms - Run for the specified number of steps. (negative means forever)
@@ -329,25 +325,21 @@ def runSim(filename, newLabels, newMainCode, randRegs=default_randRegs, savedReg
     errors = out.stderr.splitlines()
 
     # Delete the instrumented temp file
-    #os.remove(asmFile)
+    os.remove(asmFile)
 
     simOut = out.stdout.splitlines()
-    #print(simOut)
-    #print(errors)
     # Generate the map of label : address
     lineNo = 0
     labelMap = {}
     for label in allDataLabelNames:
         labelMap[label] = int(simOut[lineNo], base=16)
         lineNo += 1
-    #print(labelMap)
 
     with open("dumpFile", 'r') as cdf:
         coreDumpData = json.load(cdf)
         # remove the float part of the registers.
         coreDumpData["registers"].pop("floating", None)
 
-    #print(coreDumpData)
     regValues = coreDumpData['registers']['integer']
     # Get a0, a1, from the simulator output, as the dumpfile is not what we want
     #  and store them in the coreDump dict
@@ -360,7 +352,7 @@ def runSim(filename, newLabels, newMainCode, randRegs=default_randRegs, savedReg
         # guess base, so I can use hex or decimal. It won't work with chars, e.g. '\n' though
         if regValues[str(regNameMap[reg])] != int(savedRegs[reg], base=0):
             regCheck.append("Saved reg %s not restored. Expected %s, got %s" %(reg, savedRegs[reg], regValues[str(regNameMap[reg])]))
-    return (labelMap, coreDumpData, out.returncode, errors, simOut[lineNo:-3], regCheck)
+    return (labelMap, coreDumpData, out.returncode, errors, simOut[lineNo:-2], regCheck)
 
 
 
@@ -371,6 +363,7 @@ def evalLabelExpression(expression, labelMap):
     # Also handles hex representation
     for label in labelMap.keys():
         if re.search(r'\b%s\b'%(label), expression):
+            # replace the label with a Python dict access, which will get eval'ed at the end
             expression = re.sub(r'\b%s\b'%(label), "labelMap[\"%s\"]" %(label), expression)
     return eval(expression)
 
@@ -390,7 +383,7 @@ def checkSimResults(expected, coreDumpData, labelMap):
                 else:
                     reg = e[1]
                 if regValues[reg] != expectedV:
-                    check.append(e[4] + " Got %d, expected %d (%s)" %(regValues[e[1]], expectedV, e[3]))
+                    check.append(e[4] + " Got %d, expected %d (%s)" %(regValues[reg], expectedV, e[3]))
             else:
                 if e[0] == "sb": #signed byte
                     size = 1
