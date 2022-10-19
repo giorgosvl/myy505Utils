@@ -323,7 +323,6 @@ def runSim(filename, newLabels, newMainCode, randRegs=[], savedRegs=default_save
     out = subprocess.run(simCmd, capture_output=True, text=True)
 
     errors = out.stderr.splitlines()
-    print(errors)
 
     # Delete the instrumented temp file
     os.remove(asmFile)
