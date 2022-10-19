@@ -303,7 +303,7 @@ def instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode, lab1Ha
 
 
 
-def runSim(filename, newLabels, newMainCode, randRegs=default_randRegs, savedRegs=default_savedRegs, simSteps=-1, lab1Hack=False):
+def runSim(filename, newLabels, newMainCode, randRegs=[], savedRegs=default_savedRegs, simSteps=-1, lab1Hack=False):
     """
         Converts an assembly code file (see instrumentCode), runs the simulation and reads the simulation results:
         - gets the addresses of all labels (labelMap)
@@ -312,7 +312,7 @@ def runSim(filename, newLabels, newMainCode, randRegs=default_randRegs, savedReg
     """
     # Instrument the code, to include user modifications, initialize registers, dump label addresses and
     #  the final values of a0, a1 into stdout
-    (asmFile, allDataLabelNames) = instrumentCode(filename, newLabels, randRegs, savedRegs, newMainCode, lab1Hack)
+    (asmFile, allDataLabelNames) = instrumentCode(filename, newLabels, randRegs+default_randRegs, savedRegs, newMainCode, lab1Hack)
 
     # Run the simulation
     simCmd = ['java', '-jar', '../myy505Utils/'+'venus-jvm-latest.jar', '-it', '-cc', '-cdf', 'dumpFile', '-ms', str(simSteps), asmFile]
@@ -323,11 +323,20 @@ def runSim(filename, newLabels, newMainCode, randRegs=default_randRegs, savedReg
     out = subprocess.run(simCmd, capture_output=True, text=True)
 
     errors = out.stderr.splitlines()
+    print(errors)
 
     # Delete the instrumented temp file
     os.remove(asmFile)
 
     simOut = out.stdout.splitlines()
+    if out.returncode != 0:
+        print("------------- WARNING SOMETHING IS WRONG -------------")
+        print("SIMULATION OUTPUT:")
+        print(simOut)
+        print("SIMULATION SDTERR:")
+        print(errors)
+        print("------------------------------------------------------")
+
     # Generate the map of label : address
     lineNo = 0
     labelMap = {}
